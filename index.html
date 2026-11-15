@@ -218,11 +218,12 @@ dialog form,dialog .stack{display:flex;flex-direction:column;gap:14px}
       <label class="fl">Дата<input class="field mono" id="f-date" type="date"></label>
       <label class="fl">Повтор<select class="field" id="f-rep"><option value="none">Не повторять</option><option value="daily">Каждый день</option><option value="wd">По будням</option><option value="wk">Раз в неделю</option></select></label>
     </div>
+    <p class="small muted" id="f-recnote" hidden>Это повторяющееся дело. Изменения и «Удалить из всех дней» действуют на все дни сразу. Чтобы убрать его один раз, нажмите «Убрать только в этот день».</p>
     <p class="err" id="f-err" hidden></p>
     <button class="btn" type="button" data-a="saveBlock">Сохранить</button>
     <div class="row" id="f-extra" hidden>
+      <button class="btn soft sm" type="button" data-a="skipToday" id="f-skip" hidden>Убрать только в этот день</button>
       <button class="btn danger sm" type="button" data-a="deleteBlock" id="f-del">Удалить</button>
-      <button class="btn soft sm" type="button" data-a="skipToday" id="f-skip" hidden>Пропустить в этот день</button>
     </div>
   </form>
 </dialog>
@@ -292,13 +293,15 @@ const IDEAS=[
 ];
 
 /* ---------- state ---------- */
-function defaultState(){ return {v:1,updatedAt:0,
+function defaultState(){ return {v:2,updatedAt:0,
   settings:{dayStart:480,dayEnd:1410,sound:true},
-  recurring:[{id:"study",title:"Учёба",s:1080,e:1320,cat:"study"}],
+  recurring:[{id:"study",title:"Учёба",s:1080,e:1320,cat:"study",days:[1,2,3,4,5]}],
   days:{}, habits:[{id:"h1",title:"Зарядка 10 минут"},{id:"h2",title:"Читать 20 минут"},{id:"h3",title:"Лечь спать до полуночи"}],
   habitLog:{}, templates:[]}; }
 function migrate(s){ const d=defaultState(); if(!s||typeof s!=="object") return d;
-  return Object.assign(d,s,{settings:Object.assign(d.settings,s.settings||{})}); }
+  Object.assign(d,s,{settings:Object.assign(d.settings,s.settings||{})});
+  if((s.v||1)<2){ const st=d.recurring.find(r=>r.id==="study"); if(st&&!st.days) st.days=[1,2,3,4,5]; d.v=2; }   // v2: study on weekdays only
+  return d; }
 let state=defaultState();
 try{ const raw=localStorage.getItem(LS); if(raw) state=migrate(JSON.parse(raw)); }catch(e){}
 
@@ -434,7 +437,10 @@ function renderDay(){
   }
   if(end-c>=30) h+=free(c,end);
   if(!lineDone) h+=nowLine();
-  h+='</div></div>';
+  h+='</div>';
+  const wd=cur.getDay(), hid=state.recurring.filter(r=>d.rec[r.id]==="skip"&&!(r.days&&r.days.indexOf(wd)<0));
+  if(hid.length) h+='<p class="small muted">Убрано из этого дня: '+hid.map(r=>esc(r.title)+' <button class="link" data-a="unskip" data-id="'+r.id+'">вернуть</button>').join(", ")+'</p>';
+  h+='</div>';
   view.innerHTML=h;
   if(wantNow){ wantNow=false; const el=isToday&&view.querySelector(".it.now,.nowline"); if(el&&el.getBoundingClientRect().top>scroller.clientHeight*.75) el.scrollIntoView({block:"center"}); }
 }
@@ -518,7 +524,7 @@ function openBlock(o){ editing=o.edit||null; fCat=o.cat||"work"; fLen=o.e-o.s;
   $("dlg-block-title").textContent=editing?"Изменить дело":"Новое дело";
   $("f-title").value=o.title||""; $("f-start").value=hmIn(o.s); $("f-end").value=hmIn(o.e);
   $("f-rep").value=o.rep||"none"; $("f-date").value=o.k||dkey(cur);
-  $("f-err").hidden=true; $("f-extra").hidden=!editing; $("f-skip").hidden=!(editing&&editing.rec);
+  $("f-err").hidden=true; $("f-extra").hidden=!editing; $("f-skip").hidden=!(editing&&editing.rec); $("f-recnote").hidden=!(editing&&editing.rec);
   $("f-del").textContent=editing&&editing.rec?"Удалить из всех дней":"Удалить";
   paintForm(); dlgB.showModal(); }
 function newBlock(title,cat,need,s,e,k){ k=k||dkey(cur); if(s==null){ const g=freeSlot(k,need||60)||freeSlot(k,30); if(g){s=g[0];e=g[1];} else {s=Math.min(1380,now5());e=Math.min(1440,s+(need||60));} }
@@ -577,7 +583,8 @@ const A={
   formIdea(){ const pool=ideaPool(0,true), p=pool[Math.floor(Math.random()*pool.length)]; $("f-title").value=p[0]; fCat=p[2]; fLen=p[1]; const s=toMin($("f-start").value); if(!isNaN(s)) $("f-end").value=hmIn(Math.min(1440,s+fLen)); paintForm(); },
   editBlock(el){ const rec=el.dataset.rec==="1", it=items(dkey(cur)).find(i=>i.id===el.dataset.id); if(!it) return; openBlock({edit:{id:it.id,rec},title:it.title,s:it.s,e:it.e,cat:it.cat,rep:!rec?"none":!it.days?"daily":it.days.length>1?"wd":"wk"}); },
   deleteBlock(){ if(!editing) return; const d=dayW(dkey(cur)); if(editing.rec) state.recurring=state.recurring.filter(r=>r.id!==editing.id); else d.blocks=d.blocks.filter(b=>b.id!==editing.id); save(); dlgB.close(); render(); toast("Удалено"); },
-  skipToday(){ if(!editing) return; dayW(dkey(cur)).rec[editing.id]="skip"; save(); dlgB.close(); render(); toast("В этот день пропускаем"); },
+  skipToday(){ if(!editing) return; dayW(dkey(cur)).rec[editing.id]="skip"; save(); dlgB.close(); render(); toast("Убрано только из этого дня"); },
+  unskip(el){ const d=dayW(dkey(cur)); delete d.rec[el.dataset.id]; save(); render(); },
   openTpl(){ renderTpl(); $("tpl-name").value=""; $("tpl-start").value=hmIn(dayStart(dkey(cur))); dlgT.showModal(); },
   applyTpl(el){ const t=allTpl().find(x=>x.id===el.dataset.id); if(!t||!t.blocks.length) return; const k=dkey(cur), d=dayW(k);
     let st=toMin($("tpl-start").value); if(isNaN(st)) st=dayStart(k);
